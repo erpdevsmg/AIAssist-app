@@ -136,8 +136,6 @@ export function AIAssistantDesk() {
           setTimeout(() => setSuccessMessage(null), 5000);
         }
 
-        123
-
         setLoading(false);
       } catch (error) {
         setError('Failed to load division data');
