@@ -29,8 +29,8 @@ export function AIAssistantDesk() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // ChatGPT API Config
-  const [apiUrl, setApiUrl] = useState<string>('');
-  const [apiKey, setApiKey] = useState<string>('');
+  const [_apiUrl, setApiUrl] = useState<string>('');
+  const [_apiKey, setApiKey] = useState<string>('');
   const [apiModel, setApiModel] = useState<string>('');
 
   // Form state
@@ -87,19 +87,20 @@ export function AIAssistantDesk() {
         
         // Load divisions (this is more critical for SQL mode)
         try {
-        const divisionsResponse = await AIAssistantService.getAIDivisions();
+          const divisionsResponse = await AIAssistantService.getAIDivisions();
           
           if (divisionsResponse && divisionsResponse.success && divisionsResponse.data) {
             setDivisions(divisionsResponse.data);
             
             // Auto-select first division if available
             if (divisionsResponse.data.length > 0) {
-            const firstDivision = divisionsResponse.data[0];
-            setSelectedDivision(firstDivision.divisionValue);
-            
-            // Auto-select first subdivision if available
-            if (firstDivision.subdivisions && firstDivision.subdivisions.length > 0) {
-              setSelectedSubdivision(firstDivision.subdivisions[0].subdivisionValue);
+              const firstDivision = divisionsResponse.data[0];
+              setSelectedDivision(firstDivision.divisionValue);
+              
+              // Auto-select first subdivision if available
+              if (firstDivision.subdivisions && firstDivision.subdivisions.length > 0) {
+                setSelectedSubdivision(firstDivision.subdivisions[0].subdivisionValue);
+              }
             }
           }
         } catch (divisionsError: any) {
@@ -134,6 +135,8 @@ export function AIAssistantDesk() {
           setSuccessMessage(`Schema loaded for division '${selectedDivision}'. You can now ask SQL-related questions.`);
           setTimeout(() => setSuccessMessage(null), 5000);
         }
+
+        123
 
         setLoading(false);
       } catch (error) {
@@ -175,6 +178,7 @@ export function AIAssistantDesk() {
       setConversation(prev => [...prev, userMessage]);
 
       const aiResponse: ConversationMessage = {
+        
           role: 'assistant',
         content: 'AI response will be implemented here.',
           timestamp: new Date()
