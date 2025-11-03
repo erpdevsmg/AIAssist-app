@@ -20,7 +20,7 @@ import {
   Subdivision
 } from '../types/AIAssistant';
 
-export function AIAssistantDesk() {
+export function AIAssistantPage() {
   const navigate = useNavigate();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(false);

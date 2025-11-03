@@ -1,9 +1,11 @@
 import React, { Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { LoadingSpinner } from '@/shared/ui/LoadingSpinner';
+import { ROUTES } from './routes';
 
 // Lazy load feature pages 
-const AIAssistantDesk = React.lazy(() => import('@/features/AIAssistant/pages/AIAssistantDesk').then(module => ({ default: module.AIAssistantDesk })));
+const AIAssistantPage = React.lazy(() => import('@/features/AIAssistant/pages/AIAssistantPage').then(module => ({ default: module.AIAssistantPage })));
+const Settings = React.lazy(() => import('@/features/settings/pages/Settings').then(module => ({ default: module.Settings })));
 
 function App() {
   return (
@@ -15,7 +17,9 @@ function App() {
           </div>
         }>
           <Routes>
-            <Route path="/" element={<AIAssistantDesk />} />
+            <Route path={ROUTES.HOME} element={<AIAssistantPage />} />
+            <Route path={ROUTES.AI_ASSISTANT} element={<AIAssistantPage />} />
+            <Route path={ROUTES.SETTINGS} element={<Settings />} />
           </Routes>
         </Suspense>
       </div>
