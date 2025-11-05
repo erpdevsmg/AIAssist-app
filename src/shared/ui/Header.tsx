@@ -126,13 +126,14 @@ export const Header: React.FC<HeaderProps> = ({
       controller.abort();
     };
   }, []);
-
+  const userID = currentUser?.userID || '';
   const userName = currentUser?.userName || '';
   const userEmail = currentUser?.email || '';
   const userInitials = (currentUser ? `${currentUser.userName?.[0] ?? ''}${currentUser.lastName?.[0] ?? ''}` : 'CM').toUpperCase() || 'CM';
   
   // Debug logging
   console.log('Current User State:', currentUser);
+  console.log('User ID:', userID);
   console.log('User Name:', userName);
   console.log('User Email:', userEmail);
 
