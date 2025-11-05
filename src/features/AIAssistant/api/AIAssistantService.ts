@@ -9,11 +9,12 @@ import {
   ChatResponse,
   SQLGenerationRequest,
   SQLQueryResult,
+  PaginatedSQLQueryResult,
   SchemaSnapshot,
   AIField as FieldType
 } from '../types/AIAssistant'; 
-import { API_ENDPOINTS } from '@/shared/api';
-import { ApiResponse } from '@/shared/api/client';
+import { API_ENDPOINTS, PaginationParams } from '@/shared/api';
+import { ApiResponse, apiClient } from '@/shared/api/client';
 import axios from 'axios';
 
 
@@ -73,13 +74,164 @@ export const AIAssistantService = {
     }
   },
 
-  // Execute SQL query safely
-  executeSafeQuery: async (sqlQuery: string): Promise<ApiResponse<SQLQueryResult>> => {
+
+  executeSafeQuery: async (sqlQuery: string, pagination?: PaginationParams): Promise<PaginatedSQLQueryResult> => {
     try {
-      const response = await api.post<SQLQueryResult>(API_ENDPOINTS.EXECUTE_SQL_QUERY, { sql: sqlQuery });
-      return response;
-    } catch (error) {
+      const endpoint = API_ENDPOINTS.EXECUTE_SQL_QUERY;
+      console.log('🔍 Executing SQL query endpoint:', endpoint);
+      console.log('📝 SQL query to execute:', sqlQuery);
+      
+      // Build query parameters
+      const params = new URLSearchParams({
+        sqlQuery: sqlQuery,
+      });
+      
+      // Add pagination parameters if provided
+      if (pagination) {
+        if (pagination.page !== undefined) params.append('page', pagination.page.toString());
+        if (pagination.limit !== undefined) params.append('limit', pagination.limit.toString());
+        if (pagination.sortBy) params.append('sortBy', pagination.sortBy);
+        if (pagination.sortOrder) params.append('sortOrder', pagination.sortOrder.toUpperCase());
+      }
+      
+      const axiosResponse = await apiClient.get(`${endpoint}?${params.toString()}`);
+      const raw = axiosResponse.data;
+      console.log('🔍 SQL execution raw response:', raw);
+      console.log('🔍 axiosResponse.data structure:', {
+        hasData: !!axiosResponse.data,
+        hasTotalCount: 'totalCount' in axiosResponse.data,
+        hasTotal: 'total' in axiosResponse.data,
+        hasTotalPage: 'totalPage' in axiosResponse.data,
+        hasTotalPages: 'totalPages' in axiosResponse.data,
+        hasPagination: 'pagination' in axiosResponse.data,
+        keys: Object.keys(axiosResponse.data || {}),
+        fullResponse: axiosResponse.data
+      });
+      
+      // If backend returns a plain array
+      if (Array.isArray(raw)) {
+        const columns = raw.length > 0 ? Object.keys(raw[0]) : [];
+        const sqlResult: SQLQueryResult = {
+          columns: columns,
+          rows: raw.map((row: any) => {
+            const rowDict: Record<string, any> = {};
+            columns.forEach(col => {
+              rowDict[col] = row[col];
+            });
+            return rowDict;
+          })
+        };
+        
+        return {
+          data: sqlResult,
+          success: true,
+          pagination: {
+            page: pagination?.page ?? 1,
+            limit: pagination?.limit ?? raw.length,
+            total: axiosResponse.data.totalCount ?? raw.length,
+            totalPages: axiosResponse.data.totalPage ?? 1,
+          },
+        };
+      }
+
+      // If backend returns an object with data array (ApiResponse/PaginatedResponse)
+      if (raw && Array.isArray(raw.data)) {
+        const columns = raw.data.length > 0 ? Object.keys(raw.data[0]) : [];
+        const sqlResult: SQLQueryResult = {
+          columns: columns,
+          rows: raw.data.map((row: any) => {
+            const rowDict: Record<string, any> = {};
+            columns.forEach(col => {
+              rowDict[col] = row[col];
+            });
+            return rowDict;
+          })
+        };
+        
+        // Get total count from backend - check multiple possible locations
+        const totalCount = axiosResponse.data.totalCount ?? 
+                          axiosResponse.data.total ?? 
+                          raw.pagination?.total ?? 
+                          raw.total ?? 
+                          raw.data.length; // Fallback to current page size only if no total available
+        
+        const totalPage = axiosResponse.data.totalPage ?? 
+                         axiosResponse.data.totalPages ?? 
+                         raw.pagination?.totalPages ?? 
+                         raw.totalPages ?? 
+                         Math.ceil(totalCount / (pagination?.limit ?? raw.data.length));
+        
+        const paginationInfo = raw.pagination ?? {
+          page: pagination?.page ?? 1,
+          limit: pagination?.limit ?? raw.data.length,
+          total: totalCount,
+          totalPages: totalPage,
+        };
+
+        return {
+          data: sqlResult,
+          success: true,
+          pagination: paginationInfo,
+        };
+      }
+
+      // Handle backend format: { Message: "Success", Data: { columns: [...], rows: [...] } }
+      if (raw?.Data) {
+        const totalCount = axiosResponse.data.totalCount ?? 
+                          axiosResponse.data.total ?? 
+                          raw.total ?? 
+                          (raw.Data.rows?.length ?? 0); // Fallback to current page size only if no total available
+        
+        const totalPage = axiosResponse.data.totalPage ?? 
+                         axiosResponse.data.totalPages ?? 
+                         Math.ceil(totalCount / (pagination?.limit ?? raw.Data.rows?.length ?? 10));
+        
+        return {
+          data: raw.Data,
+          success: true,
+          pagination: {
+            page: pagination?.page ?? 1,
+            limit: pagination?.limit ?? (raw.Data.rows?.length ?? 0),
+            total: totalCount,
+            totalPages: totalPage,
+          },
+        };
+      }
+
+      // Handle standard ApiResponse format with SQLQueryResult
+      if (raw?.data && typeof raw.data === 'object' && 'columns' in raw.data) {
+        return {
+          data: raw.data as SQLQueryResult,
+          success: true,
+          pagination: raw.pagination ?? {
+            page: pagination?.page ?? 1,
+            limit: pagination?.limit ?? (raw.data as SQLQueryResult).rows?.length ?? 0,
+            total: (raw.data as SQLQueryResult).rows?.length ?? 0,
+            totalPages: 1,
+          },
+        };
+      }
+
+      // Fallback: Direct SQLQueryResult
+      return {
+        data: raw as SQLQueryResult,
+        success: true,
+        pagination: {
+          page: pagination?.page ?? 1,
+          limit: pagination?.limit ?? 1000,
+          total: 0,
+          totalPages: 1,
+        },
+      };
+    } catch (error: any) {
       console.error('Error executing SQL query:', error);
+      console.error('Error details:', {
+        status: error?.response?.status,
+        statusText: error?.response?.statusText,
+        url: error?.config?.url,
+        method: error?.config?.method,
+        data: error?.response?.data
+      });
       throw error;
     }
   },
@@ -136,17 +288,139 @@ export const AIAssistantService = {
       );
 
       const rawContent = response.data.choices[0]?.message?.content || '';
-      const cleaned = cleanModelJson(rawContent);
-      const parsed = JSON.parse(cleaned);
-
-      // Remove parameters if present
-      if (parsed.parameters) {
-        delete parsed.parameters;
+      console.log('Raw ChatGPT response:', rawContent);
+      
+      if (!rawContent || rawContent.trim() === '') {
+        throw new Error('Empty response from ChatGPT API');
       }
 
+      // First, try to extract from markdown code blocks (```sql ... ``` or ```json ... ```)
+      const codeBlockRegex = /```(?:sql|json)?\s*([\s\S]*?)```/i;
+      const codeBlockMatch = rawContent.match(codeBlockRegex);
+      
+      let extractedSQL = '';
+      let extractedNotes = '';
+      
+      if (codeBlockMatch && codeBlockMatch[1]) {
+        const codeBlockContent = codeBlockMatch[1].trim();
+        console.log('Found code block content:', codeBlockContent);
+        
+        // Check if code block contains JSON
+        if (codeBlockContent.includes('{') && codeBlockContent.includes('"sql"')) {
+          // It's JSON inside the code block
+          try {
+            // Try to parse as JSON
+            let jsonContent = codeBlockContent;
+            // Remove "json" prefix if present
+            jsonContent = jsonContent.replace(/^\s*json\s*/i, '').trim();
+            
+            // Extract JSON object if there's text before it
+            const firstBrace = jsonContent.indexOf('{');
+            const lastBrace = jsonContent.lastIndexOf('}');
+            if (firstBrace >= 0 && lastBrace > firstBrace) {
+              jsonContent = jsonContent.substring(firstBrace, lastBrace + 1);
+            }
+            
+            const parsed = JSON.parse(jsonContent);
+            console.log('Parsed JSON from code block:', parsed);
+            
+            // Remove parameters if present
+            if (parsed.parameters) {
+              delete parsed.parameters;
+            }
+
+            extractedSQL = parsed.sql || '';
+            extractedNotes = parsed.notes || '';
+          } catch (jsonError) {
+            console.warn('Failed to parse JSON from code block, trying as SQL:', jsonError);
+            // If JSON parsing fails, treat as SQL
+            extractedSQL = codeBlockContent;
+          }
+        } else {
+          // It's SQL directly in the code block
+          extractedSQL = codeBlockContent;
+          // Clean up - remove any leading "sql" keyword if ChatGPT added it
+          extractedSQL = extractedSQL.replace(/^\s*sql\s*/i, '').trim();
+        }
+        
+        // Extract notes/explanatory text from after the code block
+        const codeBlockEnd = rawContent.indexOf('```', rawContent.indexOf('```') + 3) + 3;
+        if (codeBlockEnd > 2) {
+          const afterCodeBlock = rawContent.substring(codeBlockEnd).trim();
+          // Only use as notes if it doesn't look like JSON and is explanatory text
+          if (afterCodeBlock && !afterCodeBlock.includes('{') && !afterCodeBlock.startsWith('{') && !extractedNotes) {
+            extractedNotes = afterCodeBlock;
+          }
+        }
+        console.log('Extracted SQL from code block:', extractedSQL);
+      } else {
+        // Try JSON format (no code blocks)
+        const cleaned = cleanModelJson(rawContent);
+        console.log('Cleaned JSON:', cleaned);
+        
+        try {
+          const parsed = JSON.parse(cleaned);
+          
+          // Remove parameters if present
+          if (parsed.parameters) {
+            delete parsed.parameters;
+          }
+
+          extractedSQL = parsed.sql || '';
+          extractedNotes = parsed.notes || '';
+        } catch (parseError) {
+          console.warn('Failed to parse JSON, trying direct SQL extraction:', parseError);
+          
+          // Try to extract SQL directly from text (fallback)
+          const directSqlMatch = rawContent.match(/(?:SELECT|WITH|SELECT\s+DISTINCT)[\s\S]*?(?:\n\n|\n$|```|$)/i);
+          if (directSqlMatch) {
+            extractedSQL = directSqlMatch[0].trim();
+            // Remove code block markers if present
+            extractedSQL = extractedSQL.replace(/^```(?:sql)?\s*/i, '').replace(/\s*```$/i, '').trim();
+          }
+        }
+      }
+
+      // Clean up SQL - remove any trailing markdown or explanatory text
+      if (extractedSQL) {
+        // Remove any text after SQL that looks like explanation (starts with "This query" or similar)
+        const explanationStart = extractedSQL.search(/This query|This SQL|Note:|Explanation:|^```/i);
+        if (explanationStart > 0) {
+          extractedSQL = extractedSQL.substring(0, explanationStart).trim();
+        }
+        
+        // Remove any trailing code block markers or markdown
+        extractedSQL = extractedSQL.replace(/\s*```\s*$/, '').trim();
+        
+        // Remove trailing semicolons if not needed, but keep semicolons that are part of SQL
+        // Don't remove semicolons as they're valid SQL syntax
+        
+        // Extract notes from after code block if they weren't extracted yet
+        if (!extractedNotes) {
+          // Look for explanatory text after the code block
+          const codeBlockEndMatch = rawContent.match(/```[\s\S]*?```\s*(.+)$/is);
+          if (codeBlockEndMatch && codeBlockEndMatch[1]) {
+            const potentialNotes = codeBlockEndMatch[1].trim();
+            // Only use if it doesn't look like code or JSON
+            if (!potentialNotes.startsWith('{') && !potentialNotes.startsWith('```') && 
+                (potentialNotes.toLowerCase().includes('query') || potentialNotes.toLowerCase().includes('counts') || 
+                 potentialNotes.toLowerCase().includes('selects') || potentialNotes.toLowerCase().includes('note'))) {
+              extractedNotes = potentialNotes;
+            }
+          }
+        }
+      }
+
+      if (!extractedSQL || extractedSQL.trim() === '') {
+        throw new Error('Generated SQL is empty. The AI model may not have understood the request.');
+      }
+
+      console.log('Final extracted SQL:', extractedSQL);
+      console.log('Final extracted notes:', extractedNotes);
+
       return {
-        sql: parsed.sql || '',
-        notes: parsed.notes || ''
+        sql: extractedSQL.trim(),
+        notes: extractedNotes || ''
       };
     } catch (error: any) {
       console.error('Error generating SQL query:', error);

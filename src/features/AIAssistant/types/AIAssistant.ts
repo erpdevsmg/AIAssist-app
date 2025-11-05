@@ -61,6 +61,19 @@ export interface SQLQueryResult {
   rows: Record<string, any>[];
 }
 
+// Paginated SQL query result
+export interface PaginatedSQLQueryResult {
+  data: SQLQueryResult;
+  success: boolean;
+  message?: string;
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
 export interface SchemaSnapshot {
   database: string;
   tables: Record<string, TableSchema>;
