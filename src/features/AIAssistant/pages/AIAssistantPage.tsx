@@ -20,27 +20,33 @@ import {
   AIMode, 
   ConversationMessage, 
   SQLQueryResult, 
-  ChatMessage
+  ChatMessage,
+  AIMessageLog
 } from '../types/AIAssistant';
 import { validateSQL } from '../api/AIAssistantService';
 
 export function AIAssistantPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [loading, setLoading] = useState(false); // Loading state for asking questions
-  const [loadingSchema, setLoadingSchema] = useState(false); // Loading state for schema/division data
+
+  // Loading & Error States
+  const [loading, setLoading] = useState(false);
+  const [_loadingSchema, setLoadingSchema] = useState(false); // Schema loading state (set but not currently used in UI)
   const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // User & Authentication
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const isAJIMUser = currentUser?.userID?.toUpperCase() === 'AJIM';
 
-  // ChatGPT API Config
+  // ChatGPT API Configuration
   const [apiUrl, setApiUrl] = useState<string>('');
   const [apiKey, setApiKey] = useState<string>('');
   const [apiModel, setApiModel] = useState<string>('');
+  const [apiTemperature, setApiTemperature] = useState<number | undefined>(undefined);
 
-  // Dark mode state
-  const [isDarkMode, setIsDarkMode] = useState(() => {
+  // Dark Mode State
+  const [isDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('darkMode');
       if (stored !== null) return stored === 'true';
@@ -49,24 +55,14 @@ export function AIAssistantPage() {
     return false;
   });
 
-  // File attachment state for Read Image/PDF mode
+  // File Attachment State (for Read Image/PDF mode)
   const [attachedFiles, setAttachedFiles] = useState<Array<{
     file: File;
     preview: string;
     type: 'image' | 'pdf';
   }>>([]);
 
-  // Schema and system prompt for SQL Assistant mode
-  const [aiFields, setAiFields] = useState<Array<{
-    division: string;
-    tName: string;
-    fName: string;
-    fDatatype: string;
-    fieldDesc: string;
-  }>>([]);
-  const [systemPrompt, setSystemPrompt] = useState<string>('');
-  
-  // Persistent SQL messages with schema context (like VB.NET sqlMessages)
+  // SQL Assistant Mode - Schema & Context
   const [sqlMessages, setSqlMessages] = useState<ChatMessage[] | null>(null);
   const [currentDivisionForSQL, setCurrentDivisionForSQL] = useState<string | null>(null);
 
@@ -113,6 +109,22 @@ export function AIAssistantPage() {
   const [conversation, setConversation] = useState<ConversationMessage[]>([]);
   const [sqlResults, setSqlResults] = useState<SQLQueryResult | null>(null);
   const [showResultsModal, setShowResultsModal] = useState(false);
+  
+  // Conversation tracking for message logging
+  const [conversationId, setConversationId] = useState<string>(() => {
+    // Generate a GUID format conversation ID on component mount
+    return generateGuid();
+  });
+  const [turnIndex, setTurnIndex] = useState(0);
+  
+  // Helper function to generate GUID
+  function generateGuid(): string {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
   
   // Store SQL results per message index for inline display
   const [messageResults, setMessageResults] = useState<Map<number, SQLQueryResult>>(new Map());
@@ -248,6 +260,14 @@ export function AIAssistantPage() {
             if (model) {
               setApiModel(model);
             }
+            
+            // Extract temperature from model data (similar to model extraction)
+            const temperature = modelData.aI_Temperature || modelData.AI_Temperature || 
+                               modelData.temperature || modelData.Temperature;
+            
+            if (temperature !== undefined && temperature !== null) {
+              setApiTemperature(typeof temperature === 'number' ? temperature : parseFloat(temperature));
+            }
           }
         } catch (modelError: any) {
           // Only show error for actual API failures (not 404 which might be acceptable)
@@ -378,10 +398,6 @@ export function AIAssistantPage() {
           fields = fieldsResponse;
         }
         
-        if (fields.length > 0) {
-          setAiFields(fields);
-        }
-
         // Load system prompt for the selected division
         // Backend returns: { Message: "Success", Data: { SystemPrompt: "...", GeneralPrompt: "..." } }
         const promptResponse: any = await AIAssistantService.getAIDivisionsSystemPrompt(selectedDivision);
@@ -406,8 +422,6 @@ export function AIAssistantPage() {
           if (generalPrompt && generalPrompt.trim() !== '') {
             loadedSystemPrompt += ' ' + generalPrompt;
           }
-          
-          setSystemPrompt(loadedSystemPrompt);
         }
 
         // Build persistent SQL messages with schema context (like VB.NET LoadSchemaFromDatabaseWithPrompt)
@@ -435,11 +449,10 @@ export function AIAssistantPage() {
 
             setSqlMessages(initialMessages);
             setCurrentDivisionForSQL(selectedDivision);
-            setAiFields(fields);
           } else {
             // Schema has no tables - show warning
             setError(`No schema fields available from database for AI fields for division '${selectedDivision}'.`);
-        }
+          }
         } else {
           // No fields loaded - show error
           setError(`No schema fields available from database for AI fields for division '${selectedDivision}'.`);
@@ -627,6 +640,35 @@ export function AIAssistantPage() {
         timestamp: new Date()
       };
       
+      // Increment turn index for user message
+      const currentTurnIndex = turnIndex;
+      setTurnIndex(prev => prev + 1);
+      
+      // Save user message to database
+      try {
+        const userMessageLog: AIMessageLog = {
+          conversationId: conversationId,
+          turnIndex: currentTurnIndex,
+          role: 'user',
+          content: displayContent,
+          createdUtc: new Date().toISOString(),
+          taskType: mode,
+          // appUserHash and orgId will be set by backend from authenticated user
+          orgId: currentUser?.coCode || undefined,
+          responseOk: true
+        };
+        // Save message log silently (non-blocking background operation)
+        AIAssistantService.saveMessageLog(userMessageLog).catch(err => {
+          // Silently handle errors - message logging is non-critical
+          // 401 errors are handled by the API interceptor (token refresh/redirect)
+          if (err?.status !== 401) {
+            console.warn('Failed to save user message log:', err);
+          }
+        });
+      } catch (logError) {
+        console.error('Error preparing user message log:', logError);
+      }
+      
       // Add user message to conversation immediately
       const updatedConversation = [...conversation, userMessage];
       setConversation(updatedConversation);
@@ -668,12 +710,20 @@ export function AIAssistantPage() {
             ...chatMessages // Add conversation history
           ];
           
+          // Track start time for latency measurement
+          const sqlStartTime = Date.now();
           const sqlResponse = await AIAssistantService.generateSQLQuery(
             apiUrl,
             apiKey,
             apiModel,
-            messagesForAPI
+            messagesForAPI,
+            apiTemperature
           );
+          const sqlLatency = Date.now() - sqlStartTime;
+          // Store SQL latency, response, and temperature for logging
+          (window as any).__sqlLatency = sqlLatency;
+          (window as any).__lastSQLResponse = sqlResponse;
+          (window as any).__sqlTemperature = apiTemperature;
           
           if (!sqlResponse.sql || sqlResponse.sql.trim() === '') {
             throw new Error('Generated SQL is empty. The AI model may not have understood the request or schema.');
@@ -790,13 +840,25 @@ export function AIAssistantPage() {
       } else {
         // For General and Read Image/PDF modes, use regular ChatGPT
         try {
+          // Track start time for latency measurement
+          const chatStartTime = Date.now();
           const chatResponse = await AIAssistantService.callChatGPT(
             apiUrl,
             apiKey,
             apiModel,
-            chatMessages
+            chatMessages,
+            apiTemperature
           );
+          const chatLatency = Date.now() - chatStartTime;
           aiResponseContent = chatResponse.choices[0]?.message?.content || 'No response received from AI.';
+          
+          // Store response data for logging
+          (window as any).__lastChatResponse = {
+            response: chatResponse,
+            latency: chatLatency,
+            model: apiModel,
+            temperature: apiTemperature ?? 0.7
+          };
         } catch (chatError: any) {
           throw chatError;
         }
@@ -840,6 +902,54 @@ export function AIAssistantPage() {
         }, 50);
       }
       
+      // Save assistant message to database
+      try {
+        const lastResponse = (window as any).__lastChatResponse || {};
+        const sqlResponse = (window as any).__lastSQLResponse;
+        const sqlTemperature = (window as any).__sqlTemperature;
+        
+        // Determine temperature: use from response if available, otherwise use stored SQL temperature or API temperature
+        let messageTemperature: number | undefined = undefined;
+        if (mode === 'SQL Assistant') {
+          messageTemperature = sqlTemperature ?? apiTemperature;
+        } else {
+          messageTemperature = lastResponse.temperature ?? apiTemperature ?? 0.7;
+        }
+        
+        const assistantMessageLog: AIMessageLog = {
+          conversationId: conversationId,
+          turnIndex: turnIndex,
+          role: 'assistant',
+          content: aiResponseContent,
+          createdUtc: new Date().toISOString(),
+          model: apiModel,
+          temperature: messageTemperature,
+          latencyMs: lastResponse.latency || (window as any).__sqlLatency,
+          tokensPrompt: lastResponse.response?.usage?.prompt_tokens || sqlResponse?.usage?.prompt_tokens,
+          tokensCompletion: lastResponse.response?.usage?.completion_tokens || sqlResponse?.usage?.completion_tokens,
+          tokensTotal: lastResponse.response?.usage?.total_tokens || sqlResponse?.usage?.total_tokens,
+          taskType: mode,
+          // appUserHash will be set by backend from authenticated user
+          orgId: currentUser?.coCode || undefined,
+          responseOk: true
+        };
+        // Save message log silently (non-blocking background operation)
+        AIAssistantService.saveMessageLog(assistantMessageLog).catch(err => {
+          // Silently handle errors - message logging is non-critical
+          // 401 errors are handled by the API interceptor (token refresh/redirect)
+          if (err?.status !== 401) {
+            console.warn('Failed to save assistant message log:', err);
+          }
+        });
+        // Clear stored response data
+        delete (window as any).__lastChatResponse;
+        delete (window as any).__lastSQLResponse;
+        delete (window as any).__sqlLatency;
+        delete (window as any).__sqlTemperature;
+      } catch (logError) {
+        console.error('Error preparing assistant message log:', logError);
+      }
+      
       setQuestion('');
       setAttachedFiles([]); // Clear attached files after sending
       setLoading(false);
@@ -847,6 +957,34 @@ export function AIAssistantPage() {
       console.error('Error getting AI response:', error);
       const errorMessage = error?.message || 'Failed to get AI response. Please try again.';
       setError(errorMessage);
+      
+      // Save error to database
+      try {
+        const errorMessageLog: AIMessageLog = {
+          conversationId: conversationId,
+          turnIndex: turnIndex,
+          role: 'assistant',
+          content: errorMessage,
+          createdUtc: new Date().toISOString(),
+          model: apiModel,
+          taskType: mode,
+          // appUserHash will be set by backend from authenticated user
+          orgId: currentUser?.coCode || undefined,
+          responseOk: false,
+          errorType: error?.response?.status ? `HTTP_${error.response.status}` : error?.name || 'UnknownError'
+        };
+        // Save message log silently (non-blocking background operation)
+        AIAssistantService.saveMessageLog(errorMessageLog).catch(err => {
+          // Silently handle errors - message logging is non-critical
+          // 401 errors are handled by the API interceptor (token refresh/redirect)
+          if (err?.status !== 401) {
+            console.warn('Failed to save error message log:', err);
+          }
+        });
+      } catch (logError) {
+        console.error('Error preparing error message log:', logError);
+      }
+      
       setLoading(false);
     }
   };
@@ -868,6 +1006,10 @@ export function AIAssistantPage() {
       setCurrentDivisionForSQL(null);
       setSelectedDivision('');
       setSelectedSubdivisionKey('');
+      
+      // Reset conversation tracking for new conversation
+      setConversationId(generateGuid());
+      setTurnIndex(0);
       
       // Notify user (like VB.NET adds "Cleared" message)
       setSuccessMessage('Cleared conversation & schema memory. Please select a Division again.');

@@ -11,7 +11,8 @@ import {
   SQLQueryResult,
   PaginatedSQLQueryResult,
   SchemaSnapshot,
-  AIField as FieldType
+  AIField as FieldType,
+  AIMessageLog
 } from '../types/AIAssistant'; 
 import { API_ENDPOINTS, PaginationParams } from '@/shared/api';
 import { ApiResponse, apiClient } from '@/shared/api/client';
@@ -241,7 +242,8 @@ export const AIAssistantService = {
     apiUrl: string,
     apiKey: string,
     apiModel: string,
-    messages: ChatMessage[]
+    messages: ChatMessage[],
+    temperature?: number
   ): Promise<ChatResponse> => {
     try {
       const response = await axios.post<ChatResponse>(
@@ -249,7 +251,7 @@ export const AIAssistantService = {
         {
           model: apiModel,
           messages: messages,
-          temperature: 0.7
+          temperature: temperature ?? 0.7
         },
         {
           headers: {
@@ -270,14 +272,16 @@ export const AIAssistantService = {
     apiUrl: string,
     apiKey: string,
     apiModel: string,
-    messages: ChatMessage[]
+    messages: ChatMessage[],
+    temperature?: number
   ): Promise<SQLGenerationRequest> => {
     try {
       const response = await axios.post<ChatResponse>(
         apiUrl,
         {
           model: apiModel,
-          messages: messages
+          messages: messages,
+          temperature: temperature
         },
         {
           headers: {
@@ -420,7 +424,8 @@ export const AIAssistantService = {
 
       return {
         sql: extractedSQL.trim(),
-        notes: extractedNotes || ''
+        notes: extractedNotes || '',
+        usage: response.data.usage
       };
     } catch (error: any) {
       console.error('Error generating SQL query:', error);
@@ -468,6 +473,28 @@ export const AIAssistantService = {
     });
 
     return schema;
+  },
+
+  // Save message to AI_MessageLog table
+  saveMessageLog: async (messageLog: AIMessageLog): Promise<ApiResponse<any>> => {
+    try {
+      const response = await api.post<any>(API_ENDPOINTS.SAVE_AI_MESSAGE_LOG, messageLog);
+      return response;
+    } catch (error: any) {
+      // Log error but don't throw - this is a background operation
+      // 401 errors are handled by the interceptor (token refresh/redirect)
+      if (error?.status === 401) {
+        console.warn('Authentication failed for message log. User may need to re-authenticate.');
+      } else {
+        console.error('Error saving message log:', error);
+      }
+      // Return a failed response instead of throwing
+      return {
+        success: false,
+        message: error?.message || 'Failed to save message log',
+        data: null
+      };
+    }
   },
 };
 
