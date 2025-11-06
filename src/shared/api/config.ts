@@ -72,6 +72,7 @@ export const API_ENDPOINTS = {
   GET_AI_DIVISIONS_SYSTEM_PROMPT: '/Desk/GetAIDivisionsSystemPrompt',
   GET_AI_FIELDS: '/Desk/GetAIFields',
   EXECUTE_SQL_QUERY: '/Desk/ExecuteSafeQuery',
+  SAVE_AI_MESSAGE_LOG: '/Desk/SaveAIMessageLog',
  
 };
 

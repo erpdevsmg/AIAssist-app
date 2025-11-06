@@ -17,7 +17,7 @@ export interface User {
   coCode?: string;
   deptCode?: string;
   deptName?: string;
-  userId?: string;
+  userID?: string;
   coName?: string;
 }
 
