@@ -10,6 +10,8 @@ import {
   Search,
   Paperclip,
   FileText,
+  Download,
+  Copy,
 } from 'lucide-react';
 import { Layout } from '@/shared/ui/Layout';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/ui/select';
@@ -1376,6 +1378,164 @@ export function AIAssistantPage() {
     }
   };
 
+  // Export current page to CSV
+  const exportCurrentPageToCSV = (columns: string[], rows: Record<string, any>[], filename: string = 'export.csv') => {
+    // Create CSV header
+    const csvHeader = columns.join(',');
+    
+    // Create CSV rows
+    const csvRows = rows.map(row => 
+      columns.map(col => {
+        const value = row[col];
+        // Escape quotes and wrap in quotes if contains comma, newline, or quote
+        const stringValue = value === null || value === undefined ? '' : String(value);
+        if (stringValue.includes(',') || stringValue.includes('\n') || stringValue.includes('"')) {
+          return `"${stringValue.replace(/"/g, '""')}"`;
+        }
+        return stringValue;
+      }).join(',')
+    );
+    
+    // Combine header and rows
+    const csvContent = [csvHeader, ...csvRows].join('\n');
+    
+    // Create blob and download
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    setSuccessMessage(`Exported ${rows.length} rows from current page`);
+    setTimeout(() => setSuccessMessage(null), 2000);
+  };
+
+  // Export full table data to CSV (fetches all data from server)
+  const exportAllDataToCSV = async (sqlQuery: string, filename: string = 'export.csv') => {
+    try {
+      setLoading(true);
+      
+      // Fetch all data without pagination (high limit)
+      const fullDataResponse = await AIAssistantService.executeSafeQuery(sqlQuery, {
+        page: 1,
+        limit: 999999, // Very high limit to get all data
+        sortBy: undefined,
+        sortOrder: 'asc'
+      });
+      
+      if (!fullDataResponse.success || !fullDataResponse.data) {
+        setError('Failed to fetch full data for export');
+        return;
+      }
+      
+      const { columns, rows } = fullDataResponse.data;
+      
+      // Create CSV header
+      const csvHeader = columns.join(',');
+      
+      // Create CSV rows
+      const csvRows = rows.map(row => 
+        columns.map(col => {
+          const value = row[col];
+          // Escape quotes and wrap in quotes if contains comma, newline, or quote
+          const stringValue = value === null || value === undefined ? '' : String(value);
+          if (stringValue.includes(',') || stringValue.includes('\n') || stringValue.includes('"')) {
+            return `"${stringValue.replace(/"/g, '""')}"`;
+          }
+          return stringValue;
+        }).join(',')
+      );
+      
+      // Combine header and rows
+      const csvContent = [csvHeader, ...csvRows].join('\n');
+      
+      // Create blob and download
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      setSuccessMessage(`Exported all ${rows.length} rows to ${filename}`);
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (err) {
+      console.error('Failed to export:', err);
+      setError('Failed to export data');
+      setTimeout(() => setError(null), 2000);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Copy current page data to clipboard
+  const copyCurrentPageToClipboard = async (columns: string[], rows: Record<string, any>[]) => {
+    // Create tab-separated text (works well for Excel paste)
+    const header = columns.join('\t');
+    const rowsText = rows.map(row => 
+      columns.map(col => row[col] ?? '').join('\t')
+    ).join('\n');
+    
+    const textToCopy = `${header}\n${rowsText}`;
+    
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      setSuccessMessage(`Copied ${rows.length} rows from current page to clipboard!`);
+      setTimeout(() => setSuccessMessage(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+      setError('Failed to copy to clipboard');
+      setTimeout(() => setError(null), 2000);
+    }
+  };
+
+  // Copy all data to clipboard (fetches full data from server)
+  const copyAllDataToClipboard = async (sqlQuery: string) => {
+    try {
+      setLoading(true);
+      
+      // Fetch all data without pagination
+      const fullDataResponse = await AIAssistantService.executeSafeQuery(sqlQuery, {
+        page: 1,
+        limit: 999999,
+        sortBy: undefined,
+        sortOrder: 'asc'
+      });
+      
+      if (!fullDataResponse.success || !fullDataResponse.data) {
+        setError('Failed to fetch full data');
+        return;
+      }
+      
+      const { columns, rows } = fullDataResponse.data;
+      
+      // Create tab-separated text (works well for Excel paste)
+      const header = columns.join('\t');
+      const rowsText = rows.map(row => 
+        columns.map(col => row[col] ?? '').join('\t')
+      ).join('\n');
+      
+      const textToCopy = `${header}\n${rowsText}`;
+      
+      await navigator.clipboard.writeText(textToCopy);
+      setSuccessMessage(`Copied all ${rows.length} rows to clipboard!`);
+      setTimeout(() => setSuccessMessage(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+      setError('Failed to copy to clipboard');
+      setTimeout(() => setError(null), 2000);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (initializing) {
     return (
       <Layout>
@@ -1441,7 +1601,7 @@ export function AIAssistantPage() {
                     onChange={() => setMode(m)}
                     className="sr-only"
                   />
-                  <span className="font-medium">{m}</span>
+                  <span className="font-medium">{m === 'SQL Assistant' ? 'ERP Assistant' : m}</span>
                 </label>
               ))}
             </div>
@@ -1685,8 +1845,72 @@ export function AIAssistantPage() {
                     <div className="w-full px-4 py-2">
                       <div className="ml-14 max-w-6xl">
                         <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden shadow-sm">
+                          {/* Table Actions */}
+                          <div className="flex items-center justify-between px-4 py-2 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                            <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
+                              {resultData.rows.length} row{resultData.rows.length !== 1 ? 's' : ''}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              {(() => {
+                                const msgPagination = messagePagination.get(index);
+                                const hasMultiplePages = msgPagination && msgPagination.totalPages > 1;
+                                
+                                return (
+                                  <>
+                                    {/* Copy Buttons */}
+                                    <button
+                                      onClick={() => copyCurrentPageToClipboard(resultData.columns, resultData.rows)}
+                                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 border border-gray-300 dark:border-gray-600 rounded-md transition-colors duration-150 shadow-sm hover:shadow"
+                                      title="Copy current page to clipboard"
+                                    >
+                                      <Copy className="w-3.5 h-3.5" />
+                                      {hasMultiplePages ? 'Copy Page' : 'Copy'}
+                                    </button>
+                                    {hasMultiplePages && (
+                                      <button
+                                        onClick={() => {
+                                          const sqlQuery = isAJIMUser ? message.content : conversation[index - 1]?.content || message.content;
+                                          copyAllDataToClipboard(sqlQuery);
+                                        }}
+                                        disabled={loading}
+                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md transition-colors duration-150 shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed"
+                                        title="Copy all data to clipboard"
+                                      >
+                                        <Copy className="w-3.5 h-3.5" />
+                                        Copy All
+                                      </button>
+                                    )}
+                                    
+                                    {/* Export Buttons */}
+                                    <button
+                                      onClick={() => exportCurrentPageToCSV(resultData.columns, resultData.rows, `query_page_${Date.now()}.csv`)}
+                                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 border border-gray-300 dark:border-gray-600 rounded-md transition-colors duration-150 shadow-sm hover:shadow"
+                                      title="Export current page to CSV"
+                                    >
+                                      <Download className="w-3.5 h-3.5" />
+                                      {hasMultiplePages ? 'Export Page' : 'Export CSV'}
+                                    </button>
+                                    {hasMultiplePages && (
+                                      <button
+                                        onClick={() => {
+                                          const sqlQuery = isAJIMUser ? message.content : conversation[index - 1]?.content || message.content;
+                                          exportAllDataToCSV(sqlQuery, `query_full_${Date.now()}.csv`);
+                                        }}
+                                        disabled={loading}
+                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 dark:from-green-500 dark:to-green-600 dark:hover:from-green-600 dark:hover:to-green-700 rounded-md transition-all duration-150 shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed"
+                                        title="Export all data to CSV"
+                                      >
+                                        <Download className="w-3.5 h-3.5" />
+                                        Export All
+                                      </button>
+                                    )}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          </div>
                           <div className="overflow-x-auto">
-                            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 select-text">
                               <thead className="bg-white dark:bg-gray-800">
                                 <tr>
                                   {resultData.columns.map((column, colIdx) => {
@@ -1702,7 +1926,7 @@ export function AIAssistantPage() {
                                             handleMessageSortChange(index, column, newSortOrder);
                                           }
                                         }}
-                                        className="px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 select-none transition-colors duration-150"
+                                        className="px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors duration-150"
                                       >
                                         <div className="flex items-center gap-2">
                                           <span>{column}</span>
@@ -1733,7 +1957,7 @@ export function AIAssistantPage() {
                                       {resultData.columns.map((column, colIdx) => (
                                         <td
                                           key={colIdx}
-                                          className="px-2 py-2 whitespace-nowrap text-sm"
+                                          className="px-2 py-2 whitespace-nowrap text-sm select-text cursor-text"
                                         >
                                           {formatCellValue(column, row[column], colIdx)}
                                         </td>
