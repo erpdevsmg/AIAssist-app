@@ -916,6 +916,64 @@ export function AIAssistantPage() {
           messageTemperature = lastResponse.temperature ?? apiTemperature ?? 0.7;
         }
         
+        // Check if SQL was executed
+        const pendingResult = (window as any).__pendingSQLResult;
+        
+        // Build complete tool_calls_json - full SQL response as-is
+        let toolCallsData: any = null;
+        if (mode === 'SQL Assistant' && sqlResponse) {
+          toolCallsData = {
+            sqlResponse: sqlResponse, // Full SQL response including sql, notes, usage
+            executionResult: pendingResult ? {
+              rowCount: pendingResult.data?.rows?.length || 0,
+              columnCount: pendingResult.data?.columns?.length || 0,
+              columns: pendingResult.data?.columns || [],
+              pagination: pendingResult.pagination
+            } : null
+          };
+        } else if (mode === 'Read Image/PDF' && attachedFiles.length > 0) {
+          toolCallsData = {
+            attachments: attachedFiles.map(f => ({
+              fileName: f.file.name,
+              fileType: f.type,
+              fileSize: f.file.size
+            }))
+          };
+        }
+        
+        // Build complete derived_json with all metadata
+        const derivedData: any = {
+          mode: mode,
+          responseLength: aiResponseContent.length,
+          timestamp: new Date().toISOString()
+        };
+        
+        if (mode === 'SQL Assistant') {
+          derivedData.division = selectedDivision;
+          derivedData.subdivisionKey = selectedSubdivisionKey;
+          derivedData.sqlGenerated = !!sqlResponse;
+          derivedData.sqlExecuted = !!pendingResult;
+          
+          if (pendingResult) {
+            derivedData.queryResults = {
+              rowsReturned: pendingResult.data?.rows?.length || 0,
+              columnsReturned: pendingResult.data?.columns?.length || 0,
+              totalItems: pendingResult.pagination?.totalItems || 0,
+              currentPage: pendingResult.pagination?.currentPage || 1,
+              pageSize: pendingResult.pagination?.pageSize || 10
+            };
+          }
+        } else if (mode === 'Read Image/PDF') {
+          derivedData.filesProcessed = attachedFiles.length;
+          if (attachedFiles.length > 0) {
+            derivedData.fileDetails = attachedFiles.map(f => ({
+              name: f.file.name,
+              type: f.type,
+              size: f.file.size
+            }));
+          }
+        }
+        
         const assistantMessageLog: AIMessageLog = {
           conversationId: conversationId,
           turnIndex: turnIndex,
@@ -931,7 +989,9 @@ export function AIAssistantPage() {
           taskType: mode,
           // appUserHash will be set by backend from authenticated user
           orgId: mode === 'SQL Assistant' ? (selectedDivision || undefined) : undefined,
-          responseOk: true
+          responseOk: true,
+          derivedJson: JSON.stringify(derivedData),
+          toolCallsJson: toolCallsData ? JSON.stringify(toolCallsData) : undefined
         };
         // Save message log silently (non-blocking background operation)
         AIAssistantService.saveMessageLog(assistantMessageLog).catch(err => {
@@ -960,6 +1020,16 @@ export function AIAssistantPage() {
       
       // Save error to database
       try {
+        // Prepare derived_json for error message
+        const errorDerivedData: any = {
+          mode: mode,
+          errorSource: error?.response?.config?.url || 'unknown',
+          errorStatus: error?.response?.status || null
+        };
+        if (mode === 'SQL Assistant' && selectedDivision) {
+          errorDerivedData.division = selectedDivision;
+        }
+        
         const errorMessageLog: AIMessageLog = {
           conversationId: conversationId,
           turnIndex: turnIndex,
@@ -971,7 +1041,8 @@ export function AIAssistantPage() {
           // appUserHash will be set by backend from authenticated user
           orgId: mode === 'SQL Assistant' ? (selectedDivision || undefined) : undefined,
           responseOk: false,
-          errorType: error?.response?.status ? `HTTP_${error.response.status}` : error?.name || 'UnknownError'
+          errorType: error?.response?.status ? `HTTP_${error.response.status}` : error?.name || 'UnknownError',
+          derivedJson: JSON.stringify(errorDerivedData)
         };
         // Save message log silently (non-blocking background operation)
         AIAssistantService.saveMessageLog(errorMessageLog).catch(err => {
