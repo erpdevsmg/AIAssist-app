@@ -653,8 +653,8 @@ export function AIAssistantPage() {
           content: displayContent,
           createdUtc: new Date().toISOString(),
           taskType: mode,
-          // appUserHash and orgId will be set by backend from authenticated user
-          orgId: currentUser?.coCode || undefined,
+          // appUserHash will be set by backend from authenticated user
+          orgId: mode === 'SQL Assistant' ? (selectedDivision || undefined) : undefined,
           responseOk: true
         };
         // Save message log silently (non-blocking background operation)
@@ -930,7 +930,7 @@ export function AIAssistantPage() {
           tokensTotal: lastResponse.response?.usage?.total_tokens || sqlResponse?.usage?.total_tokens,
           taskType: mode,
           // appUserHash will be set by backend from authenticated user
-          orgId: currentUser?.coCode || undefined,
+          orgId: mode === 'SQL Assistant' ? (selectedDivision || undefined) : undefined,
           responseOk: true
         };
         // Save message log silently (non-blocking background operation)
@@ -969,7 +969,7 @@ export function AIAssistantPage() {
           model: apiModel,
           taskType: mode,
           // appUserHash will be set by backend from authenticated user
-          orgId: currentUser?.coCode || undefined,
+          orgId: mode === 'SQL Assistant' ? (selectedDivision || undefined) : undefined,
           responseOk: false,
           errorType: error?.response?.status ? `HTTP_${error.response.status}` : error?.name || 'UnknownError'
         };
