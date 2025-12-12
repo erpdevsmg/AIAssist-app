@@ -27,8 +27,27 @@ import {
 } from '../types/AIAssistant';
 import { validateSQL } from '../api/AIAssistantService';
 
+const SUMMARY_TRIGGER_MESSAGE_COUNT = 12;
+const SUMMARY_BATCH_SIZE = 6;
+const SUMMARY_TAIL_TO_KEEP = 8;
+
+interface ConversationSummary {
+  id: string;
+  content: string;
+  coveredCount: number;
+  createdAt: string;
+}
+
+type SummaryState = {
+  summaries: ConversationSummary[];
+  summarizedCount: number;
+};
+
 export function AIAssistantPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const conversationSummariesRef = useRef<ConversationSummary[]>([]);
+  const summarizedCountRef = useRef(0);
+  const summarizingRef = useRef(false);
 
   // Loading & Error States
   const [loading, setLoading] = useState(false);
@@ -109,6 +128,8 @@ export function AIAssistantPage() {
   const [selectedSubdivisionKey, setSelectedSubdivisionKey] = useState<string>(''); // Stores unique key for display
   const [question, setQuestion] = useState('');
   const [conversation, setConversation] = useState<ConversationMessage[]>([]);
+  const [conversationSummaries, setConversationSummaries] = useState<ConversationSummary[]>([]);
+  const [summarizedCount, setSummarizedCount] = useState(0);
   const [sqlResults, setSqlResults] = useState<SQLQueryResult | null>(null);
   const [showResultsModal, setShowResultsModal] = useState(false);
   
@@ -146,6 +167,14 @@ export function AIAssistantPage() {
   const [totalPages, setTotalPages] = useState(0);
   const [sortBy, setSortBy] = useState<string>('');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+
+  useEffect(() => {
+    conversationSummariesRef.current = conversationSummaries;
+  }, [conversationSummaries]);
+
+  useEffect(() => {
+    summarizedCountRef.current = summarizedCount;
+  }, [summarizedCount]);
 
   // Effect to attach pending SQL results to the latest assistant message
   useEffect(() => {
@@ -522,6 +551,28 @@ export function AIAssistantPage() {
     setAttachedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
+  const sanitizeTextContent = (text: string) => {
+    if (!text) return text;
+    let cleaned = text.replace(/\r\n/g, '\n').trim();
+    cleaned = cleaned.replace(/^(assistant|user|ai|system)\s*:\s*/i, '').trimStart();
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+    return cleaned;
+  };
+
+  const sanitizeConversationContent = (
+    content: string | Array<{ type: 'text' | 'image_url'; text?: string; image_url?: { url: string } }>
+  ) => {
+    if (typeof content === 'string') {
+      return sanitizeTextContent(content);
+    }
+    return content.map(item => {
+      if (item.type === 'text' && item.text) {
+        return { ...item, text: sanitizeTextContent(item.text) };
+      }
+      return item;
+    });
+  };
+
   // Convert image file to base64 for ChatGPT vision API
   const convertImageToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -535,6 +586,168 @@ export function AIAssistantPage() {
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
+  };
+
+  const formatTranscriptForSummary = (messages: ConversationMessage[]) => {
+    return messages
+      .map(message => {
+        const speaker = message.role === 'user' ? 'User' : 'Assistant';
+        const text = typeof message.content === 'string' ? message.content : String(message.content);
+        return `${speaker}: ${text}`.trim();
+      })
+      .join('\n\n');
+  };
+
+  const maybeSummarizeConversation = async (
+    fullConversation: ConversationMessage[]
+  ): Promise<SummaryState> => {
+    if (summarizingRef.current) {
+      return {
+        summaries: conversationSummariesRef.current,
+        summarizedCount: summarizedCountRef.current
+      };
+    }
+
+    const currentSummaries = conversationSummariesRef.current;
+    const currentSummarizedCount = summarizedCountRef.current;
+    const unsummarizedLength = fullConversation.length - currentSummarizedCount;
+    const summaryCutoffIndex = fullConversation.length - SUMMARY_TAIL_TO_KEEP;
+
+    if (
+      unsummarizedLength <= SUMMARY_TRIGGER_MESSAGE_COUNT ||
+      summaryCutoffIndex <= currentSummarizedCount
+    ) {
+      return {
+        summaries: currentSummaries,
+        summarizedCount: currentSummarizedCount
+      };
+    }
+
+    const summaryEndIndex = Math.min(
+      summaryCutoffIndex,
+      currentSummarizedCount + SUMMARY_BATCH_SIZE
+    );
+
+    const windowMessages = fullConversation.slice(
+      currentSummarizedCount,
+      summaryEndIndex
+    );
+
+    if (windowMessages.length === 0) {
+      return {
+        summaries: currentSummaries,
+        summarizedCount: currentSummarizedCount
+      };
+    }
+
+    const transcript = formatTranscriptForSummary(windowMessages);
+    if (!transcript.trim()) {
+      return {
+        summaries: currentSummaries,
+        summarizedCount: currentSummarizedCount
+      };
+    }
+
+    summarizingRef.current = true;
+
+    try {
+      const summaryPrompt: ChatMessage[] = [
+        {
+          role: 'system',
+          content:
+            'You compress prior conversation for later turns. Preserve commitments, constraints, SQL code, numbers, and open follow-ups. Keep the summary concise and factual.'
+        },
+        {
+          role: 'user',
+          content: `Summarize the following exchange between a user and an assistant. Retain important instructions, SQL snippets, numbers, decisions, and unresolved questions. Answer in under 200 tokens using the sections:\nSummary:\n- ...\nKey Facts:\n- ...\nOpen Items:\n- ...\nIf a section has nothing to report, use "- None".\n\nExchange:\n${transcript}`
+        }
+      ];
+
+      const summaryResponse = await AIAssistantService.callChatGPT(
+        apiUrl,
+        apiKey,
+        apiModel,
+        summaryPrompt,
+        0.2
+      );
+
+      const summaryText = summaryResponse.choices[0]?.message?.content?.trim();
+
+      if (summaryText) {
+        const newSummarizedCount = currentSummarizedCount + windowMessages.length;
+        const newSummaries = [
+          ...currentSummaries,
+          {
+            id: generateGuid(),
+            content: summaryText,
+            coveredCount: newSummarizedCount,
+            createdAt: new Date().toISOString()
+          }
+        ];
+
+        conversationSummariesRef.current = newSummaries;
+        summarizedCountRef.current = newSummarizedCount;
+
+        setConversationSummaries(newSummaries);
+        setSummarizedCount(newSummarizedCount);
+
+        return {
+          summaries: newSummaries,
+          summarizedCount: newSummarizedCount
+        };
+      }
+    } catch (summaryError) {
+      console.error('Failed to summarize conversation chunk:', summaryError);
+    } finally {
+      summarizingRef.current = false;
+    }
+
+    return {
+      summaries: conversationSummariesRef.current,
+      summarizedCount: summarizedCountRef.current
+    };
+  };
+
+  const buildChatMessagesForModel = (
+    fullConversation: ConversationMessage[],
+    latestUserMessageContent: string | Array<{
+      type: 'text' | 'image_url';
+      text?: string;
+      image_url?: { url: string };
+    }>,
+    includeVisionContent: boolean,
+    summaryState: {
+      summaries: ConversationSummary[];
+      summarizedCount: number;
+    }
+  ): ChatMessage[] => {
+    const summaryMessages: ChatMessage[] = summaryState.summaries.map(summary => ({
+      role: 'system' as const,
+      content: summary.content
+    }));
+
+    const startIndex = summaryState.summarizedCount;
+    const tailMessages = fullConversation.slice(startIndex);
+
+    const historyMessages: ChatMessage[] = tailMessages.map((message, idx) => {
+      const globalIndex = startIndex + idx;
+      const isMostRecentUserMessage =
+        includeVisionContent && globalIndex === fullConversation.length - 1;
+
+      if (isMostRecentUserMessage) {
+        return {
+          role: 'user' as const,
+          content: latestUserMessageContent
+        };
+      }
+
+      return {
+        role: message.role,
+        content: message.content
+      };
+    });
+
+    return [...summaryMessages, ...historyMessages];
   };
 
   // Handle asking a question
@@ -615,11 +828,13 @@ export function AIAssistantPage() {
         userMessageContent = question;
       }
 
+      userMessageContent = sanitizeConversationContent(userMessageContent);
+
       // Add user message to conversation (display version for conversation history)
       // For messages with images, show a text representation in the conversation
       let displayContent: string;
       if (typeof userMessageContent === 'string') {
-        displayContent = userMessageContent;
+        displayContent = sanitizeTextContent(userMessageContent);
       } else {
         // Build display text from content array
         const textParts: string[] = [];
@@ -633,7 +848,7 @@ export function AIAssistantPage() {
             imageIndex++;
           }
         }
-        displayContent = textParts.join('\n');
+        displayContent = sanitizeTextContent(textParts.join('\n'));
       }
 
       const userMessage: ConversationMessage = {
@@ -675,21 +890,15 @@ export function AIAssistantPage() {
       const updatedConversation = [...conversation, userMessage];
       setConversation(updatedConversation);
       
+      const summaryState = await maybeSummarizeConversation(updatedConversation);
+      const includeVisionContent = mode === 'Read Image/PDF' && attachedFiles.length > 0;
 
-      // Convert conversation history to ChatGPT message format
-      const chatMessages = updatedConversation.map((msg, idx) => {
-        // For the last message (current one) with images, use the content array format
-        if (idx === updatedConversation.length - 1 && mode === 'Read Image/PDF' && attachedFiles.length > 0) {
-          return {
-            role: 'user' as const,
-            content: userMessageContent
-          };
-        }
-        return {
-          role: (msg.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
-          content: typeof msg.content === 'string' ? msg.content : msg.content
-        };
-      });
+      const chatMessages = buildChatMessagesForModel(
+        updatedConversation,
+        userMessageContent,
+        includeVisionContent,
+        summaryState
+      );
 
       let aiResponseContent = '';
 
@@ -747,17 +956,7 @@ export function AIAssistantPage() {
             aiResponseContent = sqlResponse.notes || 'SQL query has been generated and executed successfully.';
           }
           
-          // Add assistant response to persistent SQL messages (like VB.NET adds to sqlMessages)
-          if (sqlMessages) {
-            setSqlMessages([
-              ...sqlMessages,
-              ...chatMessages, // User question
-              {
-          role: 'assistant',
-                content: sqlResponse.sql
-              }
-            ]);
-          }
+          // SQL schema context already lives in sqlMessages; chat history stays in component state with summarization.
           
           // Execute the SQL query and populate results
           try {
@@ -865,6 +1064,8 @@ export function AIAssistantPage() {
           throw chatError;
         }
       }
+
+      aiResponseContent = sanitizeTextContent(aiResponseContent);
 
       const aiResponse: ConversationMessage = {
         role: 'assistant',
@@ -1066,6 +1267,11 @@ export function AIAssistantPage() {
   const handleClear = () => {
     if (confirm('Do you want to clear the conversation history, schema memory and chat bubbles?')) {
     setConversation([]);
+    setConversationSummaries([]);
+    setSummarizedCount(0);
+    conversationSummariesRef.current = [];
+    summarizedCountRef.current = 0;
+    summarizingRef.current = false;
     setSqlResults(null);
     setQuestion('');
     setError(null);
